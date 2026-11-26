@@ -13,41 +13,36 @@ This project uses machine learning to classify Amazon food reviews into three se
 
 We use Bag of Words and TF-IDF for text feature extraction and compare machine learning models including Naive Bayes, Logistic Regression, and a Feedforward Neural Network.
 
+
 ## Streamlit Application
 
-The application allows users to enter a food review and receive a predicted sentiment.
+The application provides three tabs:
 
-The current implementation uses a trained Naive Bayes model with Bag-of-Words features. Additional model comparisons are planned for Milestone 3.
+- **Analyze a Review:** Compare live sentiment predictions and class probabilities from three trained classifiers.
+- **Model Performance:** Evaluate accuracy, macro precision, macro recall, and macro F1-score using the held-out test dataset.
+- **About the Project:** Learn about the dataset and machine learning approach.
 
-## Running the Application Locally
+### Integrated Models
 
-### 1. Clone the repository
+- Multinomial Naive Bayes (Bag of Words)
+- Logistic Regression (Bag of Words)
+- Logistic Regression (TF-IDF)
 
-```bash
-git clone https://github.com/akhaliq0/cse3521-sentiment-analysis.git
-cd cse3521-sentiment-analysis
-```
+### Run Locally
 
-### 2. Create a virtual environment
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
+Install dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-### 4. Start the Streamlit application
+Start the application:
 
 ```bash
 python -m streamlit run app.py
 ```
 
-Open the local URL displayed in the terminal (usually `http://localhost:8501`).
+Open the local URL displayed in the terminal.
 
 ## Project Structure
 

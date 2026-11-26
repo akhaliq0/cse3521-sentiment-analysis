@@ -1,150 +1,147 @@
-"""Streamlit interface for CSE 3521 Amazon Food Review sentiment analysis."""
-
-from pathlib import Path
+"""CSE 3521 sentiment analysis — multi-model Streamlit prototype."""
 import html
 import re
+from pathlib import Path
 
 import joblib
 import pandas as pd
 import streamlit as st
-
+from scipy.sparse import load_npz
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 ROOT = Path(__file__).resolve().parent
-MODEL_PATH = ROOT / "models" / "nb_bow_model.joblib"
-VECTORIZERS_PATH = ROOT / "data" / "vectorizers.joblib"
+DATA = ROOT / 'data'
+MODELS = ROOT / 'models'
+SPECS = [
+    ('Naive Bayes (BoW)', 'nb_bow_model.joblib', 'bow'),
+    ('Logistic Regression (BoW)', 'lr_bow_model.joblib', 'bow'),
+    ('Logistic Regression (TF-IDF)', 'lr_tfidf_model.joblib', 'tfidf'),
+]
+LABELS = ['Negative', 'Neutral', 'Positive']
 
 
-def clean_text(text: str) -> str:
-    """Match preprocessing from the team's M2 data engineering notebook."""
+def clean_text(text):
     text = html.unescape(text)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = text.lower()
-    return re.sub(r"\\s+", " ", text).strip()
+    text = re.sub(r'<[^>]+>', ' ', text).lower()
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 @st.cache_resource
-def load_artifacts():
-    """Load the trained BoW Naive Bayes model and its fitted vectorizer."""
-    model = joblib.load(MODEL_PATH)
-    saved_vectorizers = joblib.load(VECTORIZERS_PATH)
+def load_model(filename):
+    return joblib.load(MODELS / filename)
 
-    if isinstance(saved_vectorizers, dict):
+
+@st.cache_resource
+def load_vectorizer(kind):
+    saved = joblib.load(DATA / 'vectorizers.joblib')
+    values = list(saved.values()) if isinstance(saved, dict) else (
+        list(saved) if isinstance(saved, (list, tuple)) else [saved]
+    )
+    if kind == 'bow':
         matches = [
-            value
-            for key, value in saved_vectorizers.items()
-            if "bow" in str(key).lower() or "count" in str(key).lower()
+            v for v in values
+            if isinstance(v, CountVectorizer)
+            and not isinstance(v, TfidfVectorizer)
         ]
-        if not matches:
-            raise ValueError(
-                "No Bag-of-Words vectorizer found in data/vectorizers.joblib."
-            )
-        vectorizer = matches[0]
+    elif kind == 'tfidf':
+        matches = [v for v in values if isinstance(v, TfidfVectorizer)]
     else:
-        vectorizer = saved_vectorizers
-
-    if not hasattr(vectorizer, "transform"):
-        raise TypeError("Saved BoW vectorizer has no transform() method.")
-    if not hasattr(model, "predict"):
-        raise TypeError("Saved model has no predict() method.")
-
-    return model, vectorizer
+        raise ValueError(f'Unknown vectorizer type: {kind}')
+    if len(matches) != 1:
+        raise ValueError(f'Expected one fitted {kind} vectorizer; found {len(matches)}.')
+    return matches[0]
 
 
-def predict_review(review: str, model, vectorizer):
-    cleaned_review = clean_text(review)
-    features = vectorizer.transform([cleaned_review])
-
-    if (
-        hasattr(model, "n_features_in_")
-        and features.shape[1] != model.n_features_in_
-    ):
-        raise ValueError(
-            "The BoW vectorizer and trained model expect different feature counts."
-        )
-
-    prediction = str(model.predict(features)[0])
-
-    probabilities = None
-    if hasattr(model, "predict_proba") and hasattr(model, "classes_"):
-        scores = model.predict_proba(features)[0]
-        probabilities = {
-            str(label): float(score)
-            for label, score in zip(model.classes_, scores)
-        }
-
-    return prediction, probabilities
+def predict(review, filename, kind):
+    model = load_model(filename)
+    features = load_vectorizer(kind).transform([clean_text(review)])
+    if features.shape[1] != model.n_features_in_:
+        raise ValueError('Model and vectorizer feature counts do not match.')
+    if features.nnz == 0:
+        raise ValueError('No recognized vocabulary words in this review.')
+    label = str(model.predict(features)[0])
+    probabilities = dict(zip(map(str, model.classes_), model.predict_proba(features)[0]))
+    return label, probabilities
 
 
-st.set_page_config(
-    page_title="Amazon Food Review Sentiment Analyzer",
-    page_icon="🍽️",
-    layout="centered",
-)
+@st.cache_data
+def evaluate(filename, kind):
+    model = load_model(filename)
+    X = load_npz(DATA / f'X_test_{kind}.npz')
+    labels = pd.read_csv(DATA / 'y_test.csv')
+    if 'Sentiment' in labels.columns:
+        y = labels['Sentiment']
+    elif 'sentiment' in labels.columns:
+        y = labels['sentiment']
+    elif labels.shape[1] == 1:
+        y = labels.iloc[:, 0]
+    else:
+        raise ValueError(f'Cannot identify label column: {list(labels.columns)}')
+    if len(y) != X.shape[0] or set(y.unique()) != set(LABELS):
+        raise ValueError('Test labels do not match the expected rows or classes.')
+    preds = model.predict(X)
+    p, r, f, _ = precision_recall_fscore_support(
+        y, preds, labels=LABELS, average='macro', zero_division=0
+    )
+    return {'Accuracy': accuracy_score(y, preds), 'Macro precision': p,
+            'Macro recall': r, 'Macro F1': f}
 
-st.title("Amazon Food Review Sentiment Analyzer")
-st.write(
-    "Enter a food product review to see whether our trained model "
-    "predicts **Positive**, **Neutral**, or **Negative** sentiment."
-)
 
-analyze_tab, about_tab = st.tabs(["Analyze a Review", "About the Project"])
+st.set_page_config(page_title='Food Review Sentiment Analyzer', page_icon='🍽️', layout='wide')
+st.title('Amazon Food Review Sentiment Analyzer')
+st.write('Compare machine learning predictions for a food product review.')
+available = [spec for spec in SPECS if (MODELS / spec[1]).is_file()]
+st.caption(f'{len(available)} of {len(SPECS)} configured model files available')
+analyze, performance, about = st.tabs(['Analyze a Review', 'Model Performance', 'About the Project'])
 
-with analyze_tab:
-    with st.form("review_form"):
-        review = st.text_area(
-            "Food review",
-            placeholder="Example: The snacks arrived fresh and tasted great.",
-            height=160,
-        )
-        submitted = st.form_submit_button("Analyze Sentiment")
-
+with analyze:
+    with st.form('review_form'):
+        review = st.text_area('Food review', height=150,
+                              placeholder='These snacks taste great and arrived fresh.')
+        submitted = st.form_submit_button('Analyze Sentiment', type='primary')
     if submitted:
-        if not review.strip():
-            st.warning("Enter a review before analyzing it.")
+        if not clean_text(review):
+            st.warning('Please enter a review.')
         else:
+            for column, (name, filename, kind) in zip(st.columns(len(SPECS)), SPECS):
+                with column:
+                    st.subheader(name)
+                    if not (MODELS / filename).is_file():
+                        st.info('Model not available yet.')
+                        continue
+                    try:
+                        label, probabilities = predict(review, filename, kind)
+                        if label == 'Positive':
+                            st.success(label)
+                        elif label == 'Negative':
+                            st.error(label)
+                        else:
+                            st.info(label)
+                        st.bar_chart(pd.DataFrame({'Estimated probability': probabilities}).reindex(LABELS))
+                    except Exception as exc:
+                        st.warning(f'Prediction unavailable: {exc}')
+            st.caption('Model probabilities are estimates, not guarantees of correctness.')
+
+with performance:
+    st.subheader('Held-out test set performance')
+    st.write('Evaluate the saved classifiers using the team’s existing test features and labels. Precision, recall and F1 are macro-averaged across the three classes.')
+    if st.button('Evaluate saved models'):
+        rows = []
+        for name, filename, kind in available:
             try:
-                model, vectorizer = load_artifacts()
-                label, probabilities = predict_review(
-                    review, model, vectorizer
-                )
+                rows.append({'Model': name, **evaluate(filename, kind)})
             except Exception as exc:
-                st.error(f"Prediction failed: {exc}")
-                st.info(
-                    "Check that models/nb_bow_model.joblib and "
-                    "data/vectorizers.joblib are present and compatible."
-                )
-            else:
-                st.subheader(f"Predicted Sentiment: {label}")
+                st.warning(f'{name}: {exc}')
+        if rows:
+            table = pd.DataFrame(rows).set_index('Model')
+            st.dataframe(table.style.format('{:.3f}'), use_container_width=True)
+            st.bar_chart(table[['Accuracy', 'Macro F1']], stack=False)
+    st.caption('Training time and neural network results will be added when verified.')
 
-                if probabilities:
-                    probability_table = pd.DataFrame(
-                        {
-                            "Sentiment": list(probabilities.keys()),
-                            "Estimated probability": list(probabilities.values()),
-                        }
-                    ).set_index("Sentiment")
-                    st.bar_chart(probability_table)
-                    st.caption(
-                        "Probabilities are estimates from the trained model, "
-                        "not a guarantee that the prediction is correct."
-                    )
-
-with about_tab:
-    st.subheader("How it works")
-    st.write(
-        "The app cleans the entered review, converts the text into "
-        "Bag-of-Words features using our saved fitted vectorizer, "
-        "and runs a trained Multinomial Naive Bayes classifier."
-    )
-    st.write(
-        "**Dataset:** 50,000 Amazon Fine Food Reviews. "
-        "**Labels:** Negative (1–2 stars), Neutral (3 stars), "
-        "Positive (4–5 stars)."
-    )
-    st.write(
-        "**Milestone 2 baseline:** Naive Bayes with Bag of Words "
-        "achieved 82.6% held-out test accuracy and 0.596 macro F1."
-    )
-    st.caption(
-        "Additional model comparisons will be integrated in Milestone 3."
-    )
+with about:
+    st.subheader('Dataset and methodology')
+    st.write('50,000 Amazon Fine Food Reviews, sampled with seed 43. The team used a stratified 80/20 train-test split.')
+    st.write('Negative: 1–2 stars · Neutral: 3 stars · Positive: 4–5 stars')
+    st.write('Reviews are cleaned, transformed with the original fitted Bag-of-Words or TF-IDF vectorizer, and passed to the corresponding trained classifier. No retraining is performed by the app.')
+    st.write('Naive Bayes and Logistic Regression are classical classifiers. A feedforward neural network is planned for the project; it is not connected in this version.')
