@@ -1,0 +1,9 @@
+C,class_weight,val_macro_f1
+3.0,none,0.6298
+1.0,none,0.6287
+0.1,balanced,0.6221
+0.3,balanced,0.6215
+0.3,none,0.62
+1.0,balanced,0.6146
+3.0,balanced,0.6141
+0.1,none,0.6069
